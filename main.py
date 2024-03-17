@@ -1,43 +1,56 @@
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException, Depends
 from starlette.responses import FileResponse
+from utils.database import SessionLocal, engine
+from utils import models
+from typing import Annotated, List
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+
 
 app = FastAPI()
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+origins = [
+    'http://localhost:3000'
+]
 
-class MonopolyGame:
-    def __init__(self):
-        self.players = []
-        self.properties = {
-            "Park Place": {"owner": None, "price": 200},
-            "Boardwalk": {"owner": None, "price": 400}
-        }
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+)
 
-monopoly_game = MonopolyGame()
+class TransactionBase(BaseModel):
+    amount: float
+    category: str
+    decription: str
+    is_income: bool
+    date: str
 
-@app.post("/join_game/{player_name}")
-def join_game(player_name: str):
-    monopoly_game.players.append(player_name)
-    return {"message": f"{player_name} joined the game"}
+class TransactionModel(TransactionBase):
+    id: int
 
-@app.get("/roll_dice/{player_name}")
-def roll_dice(player_name: str):
+    class Config:
+        orm_mode = True
 
-    return {"message": f"{player_name} rolled the dice"}
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-@app.post("/buy_property/{player_name}/{property_name}")
-def buy_property(player_name: str, property_name: str):
-    if monopoly_game.properties[property_name]["owner"] is None:
-        monopoly_game.properties[property_name]["owner"] = player_name
-        return {"message": f"{player_name} bought {property_name}"}
-    else:
-        return {"message": f"{property_name} is already owned by {monopoly_game.properties[property_name]['owner']}"}
+db_dependency = Annotated[Session, Depends(get_db)]
 
-@app.get("/")
-async def read_root():
-    return FileResponse("static/monopoly_board.png")
+models.Base.metadata.create_all(bind=engine)
+@app.post("/transactions/", response_model=TransactionModel)
+async def create_transaction(transaction: TransactionBase, db:db_dependency):
+    db_transaction = models.Transaction(**transaction.dict())
+    db.add(db_transaction)
+    db.commit()
+    db.refresh(db_transaction)
+    return db_transaction
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/transactions/",response_model=List[TransactionModel])
+async def read_transaction(db: db_dependency, skip: int = 0, limit = 100):
+    transaction = db.query(models.Transaction).offset(skip).limit(limit).all()
+    return transaction
